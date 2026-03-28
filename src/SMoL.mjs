@@ -11,6 +11,7 @@ import * as Core__Array from "@rescript/core/src/Core__Array.mjs";
 import * as Core__Float from "@rescript/core/src/Core__Float.mjs";
 import * as SExpression from "@brownplt/s-expression/src/SExpression.mjs";
 import * as Core__Option from "@rescript/core/src/Core__Option.mjs";
+import * as Belt_MapString from "rescript/lib/es6/belt_MapString.js";
 import * as Caml_exceptions from "rescript/lib/es6/caml_exceptions.js";
 import * as Belt_HashMapString from "rescript/lib/es6/belt_HashMapString.js";
 import * as Belt_HashSetString from "rescript/lib/es6/belt_HashSetString.js";
@@ -10118,6 +10119,986 @@ function printStandAloneTerm$4(param) {
   return toString(tmp);
 }
 
+function raiseJavaPrintError(msg) {
+  throw {
+        RE_EXN_ID: SMoLPrintError,
+        _1: "JavaPrinter: " + msg,
+        Error: new Error()
+      };
+}
+
+function sameJavaType(_t1, _t2) {
+  while(true) {
+    var t2 = _t2;
+    var t1 = _t1;
+    if (typeof t1 !== "object") {
+      switch (t1) {
+        case "JInt" :
+            if (typeof t2 !== "object" && t2 === "JInt") {
+              return true;
+            } else {
+              return false;
+            }
+        case "JBool" :
+            if (typeof t2 !== "object" && t2 === "JBool") {
+              return true;
+            } else {
+              return false;
+            }
+        case "JString" :
+            if (typeof t2 !== "object" && t2 === "JString") {
+              return true;
+            } else {
+              return false;
+            }
+        case "JVoid" :
+            if (typeof t2 !== "object" && t2 === "JVoid") {
+              return true;
+            } else {
+              return false;
+            }
+        case "JObject" :
+            if (typeof t2 !== "object" && t2 === "JObject") {
+              return true;
+            } else {
+              return false;
+            }
+        
+      }
+    } else {
+      switch (t1.TAG) {
+        case "JArrayList" :
+            if (typeof t2 !== "object") {
+              return false;
+            }
+            if (t2.TAG !== "JArrayList") {
+              return false;
+            }
+            _t2 = t2._0;
+            _t1 = t1._0;
+            continue ;
+        case "JPair" :
+            if (typeof t2 !== "object") {
+              return false;
+            }
+            if (t2.TAG !== "JPair") {
+              return false;
+            }
+            if (!sameJavaType(t1._0, t2._0)) {
+              return false;
+            }
+            _t2 = t2._1;
+            _t1 = t1._1;
+            continue ;
+        case "JFun" :
+            if (typeof t2 !== "object") {
+              return false;
+            }
+            if (t2.TAG !== "JFun") {
+              return false;
+            }
+            var args2 = t2._0;
+            var args1 = t1._0;
+            if (!(Core__List.length(args1) === Core__List.length(args2) && Core__List.every(Core__List.zip(args1, args2), (function (param) {
+                        return sameJavaType(param[0], param[1]);
+                      })))) {
+              return false;
+            }
+            _t2 = t2._1;
+            _t1 = t1._1;
+            continue ;
+        
+      }
+    }
+  };
+}
+
+function mergeJavaTypes(t1, t2) {
+  if (sameJavaType(t1, t2)) {
+    return t1;
+  } else {
+    return "JObject";
+  }
+}
+
+function javaBoxedTypeToString(t) {
+  if (typeof t !== "object") {
+    switch (t) {
+      case "JInt" :
+          return "Integer";
+      case "JBool" :
+          return "Boolean";
+      case "JString" :
+          return "String";
+      case "JVoid" :
+          return "Void";
+      case "JObject" :
+          return "Object";
+      
+    }
+  } else {
+    switch (t.TAG) {
+      case "JArrayList" :
+          return "ArrayList<" + javaBoxedTypeToString(t._0) + ">";
+      case "JPair" :
+          return "Pair<" + javaBoxedTypeToString(t._0) + ", " + javaBoxedTypeToString(t._1) + ">";
+      case "JFun" :
+          var ret = t._1;
+          var args = t._0;
+          if (!args) {
+            return "Object";
+          }
+          var match = args.tl;
+          var a = args.hd;
+          if (match) {
+            if (match.tl) {
+              return "Object";
+            } else {
+              return "java.util.function.BiFunction<" + javaBoxedTypeToString(a) + ", " + javaBoxedTypeToString(match.hd) + ", " + javaBoxedTypeToString(ret) + ">";
+            }
+          } else {
+            return "java.util.function.Function<" + javaBoxedTypeToString(a) + ", " + javaBoxedTypeToString(ret) + ">";
+          }
+      
+    }
+  }
+}
+
+function javaTypeToString(t) {
+  if (typeof t !== "object") {
+    switch (t) {
+      case "JInt" :
+          return "int";
+      case "JBool" :
+          return "boolean";
+      case "JString" :
+          return "String";
+      case "JVoid" :
+          return "void";
+      case "JObject" :
+          return "Object";
+      
+    }
+  } else {
+    switch (t.TAG) {
+      case "JArrayList" :
+          return "ArrayList<" + javaBoxedTypeToString(t._0) + ">";
+      case "JPair" :
+          return "Pair<" + javaBoxedTypeToString(t._0) + ", " + javaBoxedTypeToString(t._1) + ">";
+      case "JFun" :
+          return javaBoxedTypeToString(t);
+      
+    }
+  }
+}
+
+var helperPreamble = "import java.util.ArrayList;\nimport java.util.Arrays;\n\nclass Pair<L, R> {\n  L left;\n  R right;\n\n  Pair(L left, R right) {\n    this.left = left;\n    this.right = right;\n  }\n}\n\n";
+
+function inferExprType(_e, env) {
+  while(true) {
+    var e = _e;
+    var x = e.it;
+    switch (x.TAG) {
+      case "Con" :
+          var tmp = x._0;
+          if (typeof tmp !== "object") {
+            if (tmp === "Uni") {
+              return "JVoid";
+            } else {
+              return "JObject";
+            }
+          }
+          switch (tmp.TAG) {
+            case "Num" :
+                return "JInt";
+            case "Lgc" :
+                return "JBool";
+            case "Str" :
+                return "JString";
+            case "Sym" :
+                return "JObject";
+            
+          }
+      case "Ref" :
+          var x$1 = x._0;
+          var t = Belt_MapString.get(env, x$1);
+          if (t !== undefined) {
+            return t;
+          } else {
+            return raiseJavaPrintError("unbound variable: " + x$1);
+          }
+      case "Set" :
+          var name = x._0.it;
+          var match = Belt_MapString.get(env, name);
+          if (match === undefined) {
+            return raiseJavaPrintError("assignment to undeclared variable: " + name);
+          }
+          _e = x._1;
+          continue ;
+      case "Lam" :
+          return raiseJavaPrintError("lambda is not supported yet");
+      case "Let" :
+          return raiseJavaPrintError("let/let*/letrec are not supported yet");
+      case "AppPrm" :
+          var tmp$1 = x._0;
+          if (typeof tmp$1 === "object") {
+            if (tmp$1.TAG === "Arith") {
+              return "JInt";
+            } else {
+              return "JBool";
+            }
+          }
+          switch (tmp$1) {
+            case "PairNew" :
+                var match$1 = x._1;
+                if (!match$1) {
+                  return "JObject";
+                }
+                var match$2 = match$1.tl;
+                if (match$2 && !match$2.tl) {
+                  return {
+                          TAG: "JPair",
+                          _0: inferExprType(match$1.hd, env),
+                          _1: inferExprType(match$2.hd, env)
+                        };
+                } else {
+                  return "JObject";
+                }
+            case "PairRefLeft" :
+                var match$3 = x._1;
+                if (!match$3) {
+                  return "JObject";
+                }
+                if (match$3.tl) {
+                  return "JObject";
+                }
+                var match$4 = inferExprType(match$3.hd, env);
+                if (typeof match$4 !== "object" || match$4.TAG !== "JPair") {
+                  return "JObject";
+                } else {
+                  return match$4._0;
+                }
+            case "PairRefRight" :
+                var match$5 = x._1;
+                if (!match$5) {
+                  return "JObject";
+                }
+                if (match$5.tl) {
+                  return "JObject";
+                }
+                var match$6 = inferExprType(match$5.hd, env);
+                if (typeof match$6 !== "object" || match$6.TAG !== "JPair") {
+                  return "JObject";
+                } else {
+                  return match$6._1;
+                }
+            case "VecNew" :
+                var args = x._1;
+                if (!args) {
+                  return {
+                          TAG: "JArrayList",
+                          _0: "JObject"
+                        };
+                }
+                var t0 = inferExprType(args.hd, env);
+                var elt = Core__List.reduce(args.tl, t0, (function (acc, arg) {
+                        return mergeJavaTypes(acc, inferExprType(arg, env));
+                      }));
+                return {
+                        TAG: "JArrayList",
+                        _0: elt
+                      };
+            case "VecRef" :
+                var match$7 = x._1;
+                if (!match$7) {
+                  return "JObject";
+                }
+                var match$8 = match$7.tl;
+                if (!match$8) {
+                  return "JObject";
+                }
+                if (match$8.tl) {
+                  return "JObject";
+                }
+                var inner = inferExprType(match$7.hd, env);
+                if (typeof inner !== "object" || inner.TAG !== "JArrayList") {
+                  return "JObject";
+                } else {
+                  return inner._0;
+                }
+            case "VecLen" :
+                return "JInt";
+            case "Not" :
+            case "ZeroP" :
+                return "JBool";
+            case "PairSetLeft" :
+            case "PairSetRight" :
+            case "VecSet" :
+            case "Print" :
+                return "JVoid";
+            case "StringAppend" :
+                return "JString";
+            default:
+              return "JObject";
+          }
+      case "App" :
+          var match$9 = inferExprType(x._0, env);
+          if (typeof match$9 !== "object" || match$9.TAG !== "JFun") {
+            return "JObject";
+          } else {
+            return match$9._1;
+          }
+      case "Bgn" :
+          _e = x._1;
+          continue ;
+      case "If" :
+          return mergeJavaTypes(inferExprType(x._1, env), inferExprType(x._2, env));
+      case "And" :
+      case "Or" :
+          return "JBool";
+      case "Cnd" :
+          return raiseJavaPrintError("cond is not supported yet");
+      case "Yield" :
+          return raiseJavaPrintError("yield is not supported yet");
+      case "While" :
+          return raiseJavaPrintError("while is not supported yet");
+      
+    }
+  };
+}
+
+function printExpr(_e, env) {
+  while(true) {
+    var e = _e;
+    var c = e.it;
+    switch (c.TAG) {
+      case "Con" :
+          var c$1 = c._0;
+          if (typeof c$1 !== "object") {
+            return "null";
+          }
+          switch (c$1.TAG) {
+            case "Num" :
+                return c$1._0.toString();
+            case "Lgc" :
+                if (c$1._0) {
+                  return "true";
+                } else {
+                  return "false";
+                }
+            case "Str" :
+                return JSON.stringify(c$1._0);
+            case "Sym" :
+                return c$1._0;
+            
+          }
+      case "Ref" :
+          var x = c._0;
+          var match = Belt_MapString.get(env, x);
+          if (match !== undefined) {
+            return x;
+          } else {
+            return raiseJavaPrintError("unbound variable: " + x);
+          }
+      case "Set" :
+          var name = c._0.it;
+          var match$1 = Belt_MapString.get(env, name);
+          if (match$1 !== undefined) {
+            return name + " = " + printExpr(c._1, env);
+          } else {
+            return raiseJavaPrintError("assignment to undeclared variable: " + name);
+          }
+      case "Lam" :
+          return raiseJavaPrintError("lambda is not supported yet");
+      case "Let" :
+          return raiseJavaPrintError("let/let*/letrec are not supported yet");
+      case "AppPrm" :
+          var match$2 = c._0;
+          if (typeof match$2 !== "object") {
+            switch (match$2) {
+              case "Maybe" :
+                  return raiseJavaPrintError("maybe? is not supported yet");
+              case "PairNew" :
+                  var match$3 = c._1;
+                  if (!match$3) {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+                  var match$4 = match$3.tl;
+                  if (match$4 && !match$4.tl) {
+                    return "new Pair<>(" + printExpr(match$3.hd, env) + ", " + printExpr(match$4.hd, env) + ")";
+                  } else {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+              case "PairRefLeft" :
+                  var match$5 = c._1;
+                  if (match$5 && !match$5.tl) {
+                    return printExpr(match$5.hd, env) + ".left";
+                  } else {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+              case "PairRefRight" :
+                  var match$6 = c._1;
+                  if (match$6 && !match$6.tl) {
+                    return printExpr(match$6.hd, env) + ".right";
+                  } else {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+              case "PairSetLeft" :
+                  var match$7 = c._1;
+                  if (!match$7) {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+                  var match$8 = match$7.tl;
+                  if (match$8 && !match$8.tl) {
+                    return printExpr(match$7.hd, env) + ".left = " + printExpr(match$8.hd, env);
+                  } else {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+              case "PairSetRight" :
+                  var match$9 = c._1;
+                  if (!match$9) {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+                  var match$10 = match$9.tl;
+                  if (match$10 && !match$10.tl) {
+                    return printExpr(match$9.hd, env) + ".right = " + printExpr(match$10.hd, env);
+                  } else {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+              case "VecNew" :
+                  return "new ArrayList<>(Arrays.asList(" + Core__List.toArray(Core__List.map(c._1, (function (e) {
+                                      return printExpr(e, env);
+                                    }))).join(", ") + "))";
+              case "VecRef" :
+                  var match$11 = c._1;
+                  if (!match$11) {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+                  var match$12 = match$11.tl;
+                  if (match$12 && !match$12.tl) {
+                    return printExpr(match$11.hd, env) + ".get(" + printExpr(match$12.hd, env) + ")";
+                  } else {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+              case "VecSet" :
+                  var match$13 = c._1;
+                  if (!match$13) {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+                  var match$14 = match$13.tl;
+                  if (!match$14) {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+                  var match$15 = match$14.tl;
+                  if (match$15 && !match$15.tl) {
+                    return printExpr(match$13.hd, env) + ".set(" + printExpr(match$14.hd, env) + ", " + printExpr(match$15.hd, env) + ")";
+                  } else {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+              case "VecLen" :
+                  var match$16 = c._1;
+                  if (match$16 && !match$16.tl) {
+                    return printExpr(match$16.hd, env) + ".size()";
+                  } else {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+              case "Err" :
+                  return raiseJavaPrintError("error primitive is not supported yet");
+              case "Not" :
+                  var match$17 = c._1;
+                  if (match$17 && !match$17.tl) {
+                    return "!" + printExpr(match$17.hd, env);
+                  } else {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+              case "ZeroP" :
+                  var match$18 = c._1;
+                  if (match$18 && !match$18.tl) {
+                    return printExpr(match$18.hd, env) + " == 0";
+                  } else {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+              case "Print" :
+                  var match$19 = c._1;
+                  if (match$19 && !match$19.tl) {
+                    return "System.out.println(" + printExpr(match$19.hd, env) + ")";
+                  } else {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+              case "Next" :
+                  return raiseJavaPrintError("next is not supported yet");
+              case "StringAppend" :
+                  return Core__List.toArray(Core__List.map(c._1, (function (e) {
+                                      return printExpr(e, env);
+                                    }))).join(" + ");
+              case "Cons" :
+              case "List" :
+              case "EmptyP" :
+              case "First" :
+              case "Rest" :
+                  return raiseJavaPrintError("list primitives are not supported yet");
+              
+            }
+          } else if (match$2.TAG === "Arith") {
+            switch (match$2._0) {
+              case "Add" :
+                  var match$20 = c._1;
+                  if (!match$20) {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+                  var match$21 = match$20.tl;
+                  if (match$21 && !match$21.tl) {
+                    return printExpr(match$20.hd, env) + " + " + printExpr(match$21.hd, env);
+                  } else {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+              case "Sub" :
+                  var match$22 = c._1;
+                  if (!match$22) {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+                  var match$23 = match$22.tl;
+                  if (match$23 && !match$23.tl) {
+                    return printExpr(match$22.hd, env) + " - " + printExpr(match$23.hd, env);
+                  } else {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+              case "Mul" :
+                  var match$24 = c._1;
+                  if (!match$24) {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+                  var match$25 = match$24.tl;
+                  if (match$25 && !match$25.tl) {
+                    return printExpr(match$24.hd, env) + " * " + printExpr(match$25.hd, env);
+                  } else {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+              case "Div" :
+                  var match$26 = c._1;
+                  if (!match$26) {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+                  var match$27 = match$26.tl;
+                  if (match$27 && !match$27.tl) {
+                    return printExpr(match$26.hd, env) + " / " + printExpr(match$27.hd, env);
+                  } else {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+              
+            }
+          } else {
+            switch (match$2._0) {
+              case "Lt" :
+                  var match$28 = c._1;
+                  if (!match$28) {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+                  var match$29 = match$28.tl;
+                  if (match$29 && !match$29.tl) {
+                    return printExpr(match$28.hd, env) + " < " + printExpr(match$29.hd, env);
+                  } else {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+              case "NumEq" :
+                  var match$30 = c._1;
+                  if (!match$30) {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+                  var match$31 = match$30.tl;
+                  if (match$31 && !match$31.tl) {
+                    return printExpr(match$30.hd, env) + " == " + printExpr(match$31.hd, env);
+                  } else {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+              case "Eq" :
+                  var match$32 = c._1;
+                  if (!match$32) {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+                  var match$33 = match$32.tl;
+                  if (match$33 && !match$33.tl) {
+                    return printExpr(match$32.hd, env) + " == " + printExpr(match$33.hd, env);
+                  } else {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+              case "Gt" :
+                  var match$34 = c._1;
+                  if (!match$34) {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+                  var match$35 = match$34.tl;
+                  if (match$35 && !match$35.tl) {
+                    return printExpr(match$34.hd, env) + " > " + printExpr(match$35.hd, env);
+                  } else {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+              case "Le" :
+                  var match$36 = c._1;
+                  if (!match$36) {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+                  var match$37 = match$36.tl;
+                  if (match$37 && !match$37.tl) {
+                    return printExpr(match$36.hd, env) + " <= " + printExpr(match$37.hd, env);
+                  } else {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+              case "Ge" :
+                  var match$38 = c._1;
+                  if (!match$38) {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+                  var match$39 = match$38.tl;
+                  if (match$39 && !match$39.tl) {
+                    return printExpr(match$38.hd, env) + " >= " + printExpr(match$39.hd, env);
+                  } else {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+              case "Ne" :
+                  var match$40 = c._1;
+                  if (!match$40) {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+                  var match$41 = match$40.tl;
+                  if (match$41 && !match$41.tl) {
+                    return printExpr(match$40.hd, env) + " != " + printExpr(match$41.hd, env);
+                  } else {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+              case "Equal" :
+                  var match$42 = c._1;
+                  if (!match$42) {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+                  var match$43 = match$42.tl;
+                  if (match$43 && !match$43.tl) {
+                    return printExpr(match$42.hd, env) + ".equals(" + printExpr(match$43.hd, env) + ")";
+                  } else {
+                    return raiseJavaPrintError("unsupported primitive application shape");
+                  }
+              
+            }
+          }
+      case "App" :
+          return printExpr(c._0, env) + "(" + Core__List.toArray(Core__List.map(c._1, (function (e) {
+                              return printExpr(e, env);
+                            }))).join(", ") + ")";
+      case "Bgn" :
+          _e = c._1;
+          continue ;
+      case "If" :
+          return "(" + printExpr(c._0, env) + " ? " + printExpr(c._1, env) + " : " + printExpr(c._2, env) + ")";
+      case "And" :
+          return Core__List.toArray(Core__List.map(c._0, (function (e) {
+                              return printExpr(e, env);
+                            }))).join(" && ");
+      case "Or" :
+          return Core__List.toArray(Core__List.map(c._0, (function (e) {
+                              return printExpr(e, env);
+                            }))).join(" || ");
+      case "Cnd" :
+          return raiseJavaPrintError("cond is not supported yet");
+      case "Yield" :
+          return raiseJavaPrintError("yield is not supported yet");
+      case "While" :
+          return raiseJavaPrintError("while is not supported yet");
+      
+    }
+  };
+}
+
+function printStmt(e, env, depth) {
+  var match = e.it;
+  switch (match.TAG) {
+    case "Bgn" :
+        var i = Js_string.repeat(depth, "  ");
+        return Core__List.toArray(Core__List.map(match._0, (function (e) {
+                            return printStmt(e, env, depth);
+                          }))).join("") + i + printExpr(match._1, env) + ";\n";
+    case "If" :
+        var i$1 = Js_string.repeat(depth, "  ");
+        return i$1 + "if (" + printExpr(match._0, env) + ") {\n" + printStmt(match._1, env, depth + 1 | 0) + i$1 + "} else {\n" + printStmt(match._2, env, depth + 1 | 0) + i$1 + "}\n";
+    default:
+      return Js_string.repeat(depth, "  ") + printExpr(e, env) + ";\n";
+  }
+}
+
+function shouldPrintTopLevelExpr(e) {
+  var match = e.it;
+  switch (match.TAG) {
+    case "Set" :
+        return false;
+    case "AppPrm" :
+        var tmp = match._0;
+        if (typeof tmp === "object") {
+          return true;
+        }
+        switch (tmp) {
+          case "PairSetLeft" :
+          case "PairSetRight" :
+          case "VecSet" :
+          case "Print" :
+              return false;
+          default:
+            return true;
+        }
+    default:
+      return true;
+  }
+}
+
+function extendEnvWithBlockDefs(_b, _env) {
+  while(true) {
+    var env = _env;
+    var b = _b;
+    var match = b.it;
+    if (match.TAG === "BRet") {
+      return env;
+    }
+    var d = match._0.it;
+    var env2;
+    if (d.TAG === "Def") {
+      var match$1 = d._0.it;
+      switch (match$1.TAG) {
+        case "Var" :
+            var t = inferExprType(match$1._1, env);
+            env2 = Belt_MapString.set(env, match$1._0.it, t);
+            break;
+        case "Fun" :
+            env2 = raiseJavaPrintError("local functions are not supported yet");
+            break;
+        case "GFun" :
+            env2 = raiseJavaPrintError("local generator functions are not supported yet");
+            break;
+        
+      }
+    } else {
+      env2 = env;
+    }
+    _env = env2;
+    _b = match._1;
+    continue ;
+  };
+}
+
+function printBlock$5(b, env, depth) {
+  var e = b.it;
+  if (e.TAG === "BRet") {
+    return Js_string.repeat(depth, "  ") + "return " + printExpr(e._0, env) + ";\n";
+  }
+  var rest = e._1;
+  var e$1 = e._0.it;
+  if (e$1.TAG !== "Def") {
+    return printStmt(e$1._0, env, depth) + printBlock$5(rest, env, depth);
+  }
+  var match = e$1._0.it;
+  switch (match.TAG) {
+    case "Var" :
+        var rhs = match._1;
+        var x = match._0;
+        var t = inferExprType(rhs, env);
+        var line = Js_string.repeat(depth, "  ") + javaTypeToString(t) + " " + x.it + " = " + printExpr(rhs, env) + ";\n";
+        var env2 = Belt_MapString.set(env, x.it, t);
+        return line + printBlock$5(rest, env2, depth);
+    case "Fun" :
+        return raiseJavaPrintError("local functions are not supported yet");
+    case "GFun" :
+        return raiseJavaPrintError("local generator functions are not supported yet");
+    
+  }
+}
+
+function inferTopLevelFunctionType(xs, body, env) {
+  var paramEnv = Core__List.reduce(xs, env, (function (acc, x) {
+          return Belt_MapString.set(acc, x.it, "JInt");
+        }));
+  var bodyEnv = extendEnvWithBlockDefs(body, paramEnv);
+  var e = body.it;
+  var ret;
+  ret = e.TAG === "BRet" ? inferExprType(e._0, bodyEnv) : "JVoid";
+  return {
+          TAG: "JFun",
+          _0: Core__List.map(xs, (function (param) {
+                  return "JInt";
+                })),
+          _1: ret
+        };
+}
+
+function widenTopLevelEnvWithExpr(_env, _e) {
+  while(true) {
+    var e = _e;
+    var env = _env;
+    var match = e.it;
+    switch (match.TAG) {
+      case "Set" :
+          _e = match._1;
+          continue ;
+      case "AppPrm" :
+          var tmp = match._0;
+          if (typeof tmp !== "object" && tmp === "VecSet") {
+            var match$1 = match._1;
+            if (match$1) {
+              var match$2 = match$1.tl;
+              if (match$2) {
+                var match$3 = match$2.tl;
+                if (match$3 && !match$3.tl) {
+                  var value = match$3.hd;
+                  var x = match$1.hd.it;
+                  if (x.TAG !== "Ref") {
+                    return env;
+                  }
+                  var x$1 = x._0;
+                  var match$4 = Belt_MapString.get(env, x$1);
+                  if (match$4 === undefined) {
+                    return env;
+                  }
+                  if (typeof match$4 !== "object") {
+                    return env;
+                  }
+                  if (match$4.TAG !== "JArrayList") {
+                    return env;
+                  }
+                  var y = value.it;
+                  var newElt;
+                  var exit = 0;
+                  if (y.TAG === "Ref" && x$1 === y._0) {
+                    newElt = "JObject";
+                  } else {
+                    exit = 2;
+                  }
+                  if (exit === 2) {
+                    newElt = mergeJavaTypes(match$4._0, inferExprType(value, env));
+                  }
+                  return Belt_MapString.set(env, x$1, {
+                              TAG: "JArrayList",
+                              _0: newElt
+                            });
+                }
+                
+              }
+              
+            }
+            
+          }
+          return Core__List.reduce(match._1, env, (function (acc, arg) {
+                        return widenTopLevelEnvWithExpr(acc, arg);
+                      }));
+      case "App" :
+          var env1 = widenTopLevelEnvWithExpr(env, match._0);
+          return Core__List.reduce(match._1, env1, (function (acc, arg) {
+                        return widenTopLevelEnvWithExpr(acc, arg);
+                      }));
+      case "Bgn" :
+          var env2 = Core__List.reduce(match._0, env, (function (acc, e) {
+                  return widenTopLevelEnvWithExpr(acc, e);
+                }));
+          _e = match._1;
+          _env = env2;
+          continue ;
+      case "If" :
+          var env1$1 = widenTopLevelEnvWithExpr(env, match._0);
+          var env2$1 = widenTopLevelEnvWithExpr(env1$1, match._1);
+          _e = match._2;
+          _env = env2$1;
+          continue ;
+      default:
+        return env;
+    }
+  };
+}
+
+function collectTopLevelEnv(p) {
+  var _p = p;
+  var _env;
+  while(true) {
+    var env = _env;
+    var p$1 = _p;
+    var match = p$1.it;
+    if (typeof match !== "object") {
+      return env;
+    }
+    var e = match._0.it;
+    var env2;
+    if (e.TAG === "Def") {
+      var match$1 = e._0.it;
+      switch (match$1.TAG) {
+        case "Var" :
+            var t = inferExprType(match$1._1, env);
+            env2 = Belt_MapString.set(env, match$1._0.it, t);
+            break;
+        case "Fun" :
+            env2 = Belt_MapString.set(env, match$1._0.it, inferTopLevelFunctionType(match$1._1, match$1._2, env));
+            break;
+        case "GFun" :
+            env2 = raiseJavaPrintError("generator functions are not supported yet");
+            break;
+        
+      }
+    } else {
+      env2 = widenTopLevelEnvWithExpr(env, e._0);
+    }
+    _env = env2;
+    _p = match._1;
+    continue ;
+  };
+}
+
+function printDef$5(d, env) {
+  var match = d.it;
+  switch (match.TAG) {
+    case "Var" :
+        var rhs = match._1;
+        var t = inferExprType(rhs, env);
+        return javaTypeToString(t) + " " + match._0.it + " = " + printExpr(rhs, env) + ";\n";
+    case "Fun" :
+        var body = match._2;
+        var xs = match._1;
+        var paramEnv = Core__List.reduce(xs, env, (function (acc, x) {
+                return Belt_MapString.set(acc, x.it, "JInt");
+              }));
+        var bodyEnv = extendEnvWithBlockDefs(body, paramEnv);
+        var e = body.it;
+        var ret;
+        ret = e.TAG === "BRet" ? inferExprType(e._0, bodyEnv) : "JVoid";
+        return javaTypeToString(ret) + " " + match._0.it + "(" + Core__List.toArray(Core__List.map(xs, (function (x) {
+                            return "int " + x.it;
+                          }))).join(", ") + ") {\n" + printBlock$5(body, paramEnv, 1) + "}\n";
+    case "GFun" :
+        return raiseJavaPrintError("generator functions are not supported yet");
+    
+  }
+}
+
+function printProgram$5(insertPrintTopLevel, p) {
+  var env = collectTopLevelEnv(p);
+  var _p = p;
+  var _defs = "";
+  var _mainStmts = "";
+  while(true) {
+    var mainStmts = _mainStmts;
+    var defs = _defs;
+    var p$1 = _p;
+    var match = p$1.it;
+    if (typeof match !== "object") {
+      return helperPreamble + defs + "\nvoid main() {\n" + mainStmts + "}\n";
+    }
+    var rest = match._1;
+    var d = match._0.it;
+    if (d.TAG === "Def") {
+      _defs = defs + printDef$5(d._0, env) + "\n";
+      _p = rest;
+      continue ;
+    }
+    var e = d._0;
+    var line = insertPrintTopLevel && shouldPrintTopLevelExpr(e) ? Js_string.repeat(1, "  ") + "System.out.println(" + printExpr(e, env) + ");\n" : printStmt(e, env, 1);
+    _mainStmts = mainStmts + line;
+    _p = rest;
+    continue ;
+  };
+}
+
 function toString$11(t) {
   switch (t.TAG) {
     case "ParseError" :
@@ -11030,6 +12011,10 @@ var SCPrinter = {
   printProgramFull: printProgramFull$4
 };
 
+var JavaPrinter = {
+  printProgram: printProgram$5
+};
+
 export {
   Print ,
   Primitive ,
@@ -11057,5 +12042,6 @@ export {
   JSTranslator ,
   PCTranslator ,
   SCTranslator ,
+  JavaPrinter ,
 }
 /* type_assignment Not a pure module */

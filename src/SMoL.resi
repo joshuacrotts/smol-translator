@@ -230,3 +230,6 @@ module PYTranslator: Translator
 module JSTranslator: Translator
 module PCTranslator: Translator
 module SCTranslator: Translator
+module JavaPrinter: {
+  let printProgram: (bool, program<sourceLocation>) => string
+}

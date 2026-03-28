@@ -5077,6 +5077,608 @@ module SCPrinter = {
   }
 }
 
+// Paste here
+
+type rec javaType =
+  | JInt
+  | JBool
+  | JString
+  | JVoid
+  | JObject
+  | JArrayList(javaType)
+  | JPair(javaType, javaType)
+  | JFun(list<javaType>, javaType)
+
+module JavaStringMap = Belt.Map.String
+
+let raiseJavaPrintError = msg => raisePrintError("JavaPrinter: " ++ msg)
+
+let rec sameJavaType = (t1, t2) =>
+  switch (t1, t2) {
+  | (JInt, JInt) => true
+  | (JBool, JBool) => true
+  | (JString, JString) => true
+  | (JVoid, JVoid) => true
+  | (JObject, JObject) => true
+  | (JArrayList(a), JArrayList(b)) => sameJavaType(a, b)
+  | (JPair(a1, a2), JPair(b1, b2)) =>
+      sameJavaType(a1, b1) && sameJavaType(a2, b2)
+  | (JFun(args1, ret1), JFun(args2, ret2)) =>
+      List.length(args1) == List.length(args2)
+      && List.zip(args1, args2)->List.every(((a, b)) => sameJavaType(a, b))
+      && sameJavaType(ret1, ret2)
+  | _ => false
+  }
+
+let mergeJavaTypes = (t1, t2) =>
+  if sameJavaType(t1, t2) {
+    t1
+  } else {
+    JObject
+  }
+
+let rec javaBoxedTypeToString = t =>
+  switch t {
+  | JInt => "Integer"
+  | JBool => "Boolean"
+  | JString => "String"
+  | JVoid => "Void"
+  | JObject => "Object"
+  | JArrayList(inner) => "ArrayList<" ++ javaBoxedTypeToString(inner) ++ ">"
+  | JPair(l, r) =>
+      "Pair<" ++ javaBoxedTypeToString(l) ++ ", " ++ javaBoxedTypeToString(r) ++ ">"
+  | JFun(args, ret) =>
+      switch args {
+      | list{} => "Object"
+      | list{a} =>
+          "java.util.function.Function<"
+          ++ javaBoxedTypeToString(a)
+          ++ ", "
+          ++ javaBoxedTypeToString(ret)
+          ++ ">"
+      | list{a, b} =>
+          "java.util.function.BiFunction<"
+          ++ javaBoxedTypeToString(a)
+          ++ ", "
+          ++ javaBoxedTypeToString(b)
+          ++ ", "
+          ++ javaBoxedTypeToString(ret)
+          ++ ">"
+      | _ => "Object"
+      }
+  }
+
+let javaTypeToString = t =>
+  switch t {
+  | JInt => "int"
+  | JBool => "boolean"
+  | JString => "String"
+  | JVoid => "void"
+  | JObject => "Object"
+  | JArrayList(inner) => "ArrayList<" ++ javaBoxedTypeToString(inner) ++ ">"
+  | JPair(l, r) =>
+      "Pair<" ++ javaBoxedTypeToString(l) ++ ", " ++ javaBoxedTypeToString(r) ++ ">"
+  | JFun(_, _) => javaBoxedTypeToString(t)
+  }
+
+module JavaPrinter = {
+  let printName = x => x
+
+  let helperPreamble =
+    "import java.util.ArrayList;\n"
+    ++ "import java.util.Arrays;\n"
+    ++ "\n"
+    ++ "class Pair<L, R> {\n"
+    ++ "  L left;\n"
+    ++ "  R right;\n"
+    ++ "\n"
+    ++ "  Pair(L left, R right) {\n"
+    ++ "    this.left = left;\n"
+    ++ "    this.right = right;\n"
+    ++ "  }\n"
+    ++ "}\n"
+    ++ "\n"
+
+  let indent = n => Js.String.repeat(n, "  ")
+
+  let constantToString = c =>
+    switch c {
+    | Uni => "null"
+    | Nil => "null"
+    | Num(n) => Float.toString(n)
+    | Lgc(true) => "true"
+    | Lgc(false) => "false"
+    | Str(s) => JSON.stringify(String(s))
+    | Sym(s) => s
+    }
+
+  let rec inferExprType = (e, env) =>
+    switch e.it {
+    | Con(Num(_)) => JInt
+    | Con(Lgc(_)) => JBool
+    | Con(Str(_)) => JString
+    | Con(Uni) => JVoid
+    | Con(Nil) => JObject
+    | Con(Sym(_)) => JObject
+
+    | Ref(x) =>
+        switch JavaStringMap.get(env, x) {
+        | Some(t) => t
+        | None => raiseJavaPrintError("unbound variable: " ++ x)
+        }
+
+    | Set(x, rhs) =>
+        let name = x.it
+        switch JavaStringMap.get(env, name) {
+        | Some(_) => inferExprType(rhs, env)
+        | None => raiseJavaPrintError("assignment to undeclared variable: " ++ name)
+        }
+
+    | Bgn(_, last) => inferExprType(last, env)
+
+    | If(_, t, e2) =>
+        mergeJavaTypes(inferExprType(t, env), inferExprType(e2, env))
+
+    | And(_) => JBool
+    | Or(_) => JBool
+
+    | AppPrm(Arith(_), _) => JInt
+    | AppPrm(Cmp(_), _) => JBool
+    | AppPrm(Not, _) => JBool
+    | AppPrm(ZeroP, _) => JBool
+    | AppPrm(StringAppend, _) => JString
+    | AppPrm(VecLen, _) => JInt
+    | AppPrm(VecSet, _) => JVoid
+    | AppPrm(PairSetLeft, _) => JVoid
+    | AppPrm(PairSetRight, _) => JVoid
+    | AppPrm(Print, _) => JVoid
+
+    | AppPrm(VecNew, args) =>
+        switch args {
+        | list{} => JArrayList(JObject)
+        | list{first, ...rest} =>
+            let t0 = inferExprType(first, env)
+            let elt =
+              rest->List.reduce(t0, (acc, arg) => mergeJavaTypes(acc, inferExprType(arg, env)))
+            JArrayList(elt)
+        }
+
+    | AppPrm(VecRef, list{vec, _idx}) =>
+        switch inferExprType(vec, env) {
+        | JArrayList(inner) => inner
+        | _ => JObject
+        }
+
+    | AppPrm(PairNew, list{a, b}) =>
+        JPair(inferExprType(a, env), inferExprType(b, env))
+
+    | AppPrm(PairRefLeft, list{p}) =>
+        switch inferExprType(p, env) {
+        | JPair(l, _) => l
+        | _ => JObject
+        }
+
+    | AppPrm(PairRefRight, list{p}) =>
+        switch inferExprType(p, env) {
+        | JPair(_, r) => r
+        | _ => JObject
+        }
+
+    | AppPrm(_, _) => JObject
+
+    | App(f, _args) =>
+        switch inferExprType(f, env) {
+        | JFun(_, ret) => ret
+        | _ => JObject
+        }
+
+    | Lam(_, _) =>
+        raiseJavaPrintError("lambda is not supported yet")
+
+    | Let(_, _, _) =>
+        raiseJavaPrintError("let/let*/letrec are not supported yet")
+
+    | Cnd(_, _) =>
+        raiseJavaPrintError("cond is not supported yet")
+
+    | Yield(_) =>
+        raiseJavaPrintError("yield is not supported yet")
+
+    | While(_, _) =>
+        raiseJavaPrintError("while is not supported yet")
+    }
+
+
+  let rec printExpr = (e, env) =>
+    switch e.it {
+    | Con(c) => constantToString(c)
+
+    | Ref(x) =>
+        switch JavaStringMap.get(env, x) {
+        | Some(_) => x
+        | None => raiseJavaPrintError("unbound variable: " ++ x)
+        }
+
+    | Set(x, rhs) =>
+        let name = x.it
+        switch JavaStringMap.get(env, name) {
+        | Some(_) => name ++ " = " ++ printExpr(rhs, env)
+        | None => raiseJavaPrintError("assignment to undeclared variable: " ++ name)
+        }
+
+    | Bgn(_, last) =>
+        printExpr(last, env)
+
+    | If(c, t, e2) =>
+        "(" ++ printExpr(c, env) ++ " ? " ++ printExpr(t, env) ++ " : " ++ printExpr(e2, env) ++ ")"
+
+    | And(es) =>
+        concat(" && ", es->List.map(e => printExpr(e, env))->List.toArray)
+
+    | Or(es) =>
+        concat(" || ", es->List.map(e => printExpr(e, env))->List.toArray)
+    | AppPrm(Arith(Add), list{a, b}) =>
+        printExpr(a, env) ++ " + " ++ printExpr(b, env)
+    | AppPrm(Arith(Sub), list{a, b}) =>
+        printExpr(a, env) ++ " - " ++ printExpr(b, env)
+    | AppPrm(Arith(Mul), list{a, b}) =>
+        printExpr(a, env) ++ " * " ++ printExpr(b, env)
+    | AppPrm(Arith(Div), list{a, b}) =>
+        printExpr(a, env) ++ " / " ++ printExpr(b, env)
+
+    | AppPrm(Cmp(Lt), list{a, b}) =>
+        printExpr(a, env) ++ " < " ++ printExpr(b, env)
+    | AppPrm(Cmp(Gt), list{a, b}) =>
+        printExpr(a, env) ++ " > " ++ printExpr(b, env)
+    | AppPrm(Cmp(Le), list{a, b}) =>
+        printExpr(a, env) ++ " <= " ++ printExpr(b, env)
+    | AppPrm(Cmp(Ge), list{a, b}) =>
+        printExpr(a, env) ++ " >= " ++ printExpr(b, env)
+    | AppPrm(Cmp(NumEq), list{a, b}) =>
+        printExpr(a, env) ++ " == " ++ printExpr(b, env)
+    | AppPrm(Cmp(Ne), list{a, b}) =>
+        printExpr(a, env) ++ " != " ++ printExpr(b, env)
+    | AppPrm(Cmp(Eq), list{a, b}) =>
+        printExpr(a, env) ++ " == " ++ printExpr(b, env)
+    | AppPrm(Cmp(Equal), list{a, b}) =>
+        printExpr(a, env) ++ ".equals(" ++ printExpr(b, env) ++ ")"
+
+    | AppPrm(Not, list{a}) =>
+        "!" ++ printExpr(a, env)
+
+    | AppPrm(ZeroP, list{a}) =>
+        printExpr(a, env) ++ " == 0"
+
+    | AppPrm(StringAppend, args) =>
+        concat(" + ", args->List.map(e => printExpr(e, env))->List.toArray)
+
+    | AppPrm(VecNew, args) =>
+        "new ArrayList<>(Arrays.asList("
+        ++ concat(", ", args->List.map(e => printExpr(e, env))->List.toArray)
+        ++ "))"
+
+    | AppPrm(VecRef, list{vec, idx}) =>
+        printExpr(vec, env) ++ ".get(" ++ printExpr(idx, env) ++ ")"
+
+    | AppPrm(VecLen, list{vec}) =>
+        printExpr(vec, env) ++ ".size()"
+
+    | AppPrm(VecSet, list{vec, idx, value}) =>
+        printExpr(vec, env)
+        ++ ".set("
+        ++ printExpr(idx, env)
+        ++ ", "
+        ++ printExpr(value, env)
+        ++ ")"
+
+    | AppPrm(PairNew, list{a, b}) =>
+        "new Pair<>(" ++ printExpr(a, env) ++ ", " ++ printExpr(b, env) ++ ")"
+
+    | AppPrm(PairRefLeft, list{p}) =>
+        printExpr(p, env) ++ ".left"
+
+    | AppPrm(PairRefRight, list{p}) =>
+        printExpr(p, env) ++ ".right"
+
+    | AppPrm(PairSetLeft, list{p, value}) =>
+        printExpr(p, env) ++ ".left = " ++ printExpr(value, env)
+
+    | AppPrm(PairSetRight, list{p, value}) =>
+        printExpr(p, env) ++ ".right = " ++ printExpr(value, env)
+
+    | AppPrm(Print, list{value}) =>
+        "System.out.println(" ++ printExpr(value, env) ++ ")"
+
+    | AppPrm(Maybe, _) =>
+        raiseJavaPrintError("maybe? is not supported yet")
+
+    | AppPrm(Next, _) =>
+        raiseJavaPrintError("next is not supported yet")
+
+    | AppPrm(Cons, _) =>
+        raiseJavaPrintError("list primitives are not supported yet")
+    | AppPrm(List, _) =>
+        raiseJavaPrintError("list primitives are not supported yet")
+    | AppPrm(EmptyP, _) =>
+        raiseJavaPrintError("list primitives are not supported yet")
+    | AppPrm(First, _) =>
+        raiseJavaPrintError("list primitives are not supported yet")
+    | AppPrm(Rest, _) =>
+        raiseJavaPrintError("list primitives are not supported yet")
+
+    | AppPrm(Err, _) =>
+        raiseJavaPrintError("error primitive is not supported yet")
+
+    | App(f, args) =>
+        printExpr(f, env)
+        ++ "("
+        ++ concat(", ", args->List.map(e => printExpr(e, env))->List.toArray)
+        ++ ")"
+
+    | Lam(_, _) =>
+        raiseJavaPrintError("lambda is not supported yet")
+
+    | Let(_, _, _) =>
+        raiseJavaPrintError("let/let*/letrec are not supported yet")
+
+    | Cnd(_, _) =>
+        raiseJavaPrintError("cond is not supported yet")
+
+    | Yield(_) =>
+        raiseJavaPrintError("yield is not supported yet")
+
+    | While(_, _) =>
+        raiseJavaPrintError("while is not supported yet")
+    | AppPrm(_, _) =>
+        raiseJavaPrintError("unsupported primitive application shape")
+    }
+
+  let rec printStmt = (e, env, depth) =>
+    switch e.it {
+    | If(c, t, e2) =>
+        let i = indent(depth)
+        i ++ "if (" ++ printExpr(c, env) ++ ") {\n"
+        ++ printStmt(t, env, depth + 1)
+        ++ i ++ "} else {\n"
+        ++ printStmt(e2, env, depth + 1)
+        ++ i ++ "}\n"
+
+    | Bgn(es, last) =>
+        let i = indent(depth)
+        concat("", es->List.map(e => printStmt(e, env, depth))->List.toArray)
+        ++ i
+        ++ printExpr(last, env)
+        ++ ";\n"
+
+    | _ =>
+        indent(depth) ++ printExpr(e, env) ++ ";\n"
+    }
+
+  let shouldPrintTopLevelExpr = e =>
+    switch e.it {
+    | Set(_, _) => false
+    | AppPrm(VecSet, _) => false
+    | AppPrm(PairSetLeft, _) => false
+    | AppPrm(PairSetRight, _) => false
+    | AppPrm(Print, _) => false
+    | _ => true
+    }
+
+  let rec extendEnvWithBlockDefs = (b, env) =>
+    switch b.it {
+    | BRet(_) => env
+    | BCons(t, rest) =>
+        let env2 =
+          switch t.it {
+          | Exp(_) => env
+          | Def(d) =>
+              switch d.it {
+              | Var(x, rhs) =>
+                  let t = inferExprType(rhs, env)
+                  JavaStringMap.set(env, x.it, t)
+              | Fun(_, _, _) =>
+                  raiseJavaPrintError("local functions are not supported yet")
+              | GFun(_, _, _) =>
+                  raiseJavaPrintError("local generator functions are not supported yet")
+              }
+          }
+        extendEnvWithBlockDefs(rest, env2)
+    }
+
+  let rec printBlock = (b, env, depth) =>
+    switch b.it {
+    | BRet(e) =>
+        indent(depth) ++ "return " ++ printExpr(e, env) ++ ";\n"
+
+    | BCons(t, rest) =>
+        switch t.it {
+        | Exp(e) =>
+            printStmt(e, env, depth) ++ printBlock(rest, env, depth)
+        | Def(d) =>
+            switch d.it {
+            | Var(x, rhs) =>
+                let t = inferExprType(rhs, env)
+                let line =
+                  indent(depth)
+                  ++ javaTypeToString(t)
+                  ++ " "
+                  ++ x.it
+                  ++ " = "
+                  ++ printExpr(rhs, env)
+                  ++ ";\n"
+                let env2 = JavaStringMap.set(env, x.it, t)
+                line ++ printBlock(rest, env2, depth)
+            | Fun(_, _, _) =>
+                raiseJavaPrintError("local functions are not supported yet")
+            | GFun(_, _, _) =>
+                raiseJavaPrintError("local generator functions are not supported yet")
+            }
+        }
+    }
+
+  let inferTopLevelFunctionType = (xs, body, env) => {
+    let paramEnv =
+      xs->List.reduce(env, (acc, x) => JavaStringMap.set(acc, x.it, JInt))
+    let bodyEnv = extendEnvWithBlockDefs(body, paramEnv)
+    let ret =
+      switch body.it {
+      | BRet(e) => inferExprType(e, bodyEnv)
+      | BCons(_, _) => JVoid
+      }
+    JFun(xs->List.map(_ => JInt), ret)
+  }
+
+  let rec widenTopLevelEnvWithExpr = (env, e) =>
+    switch e.it {
+    | Set(_, rhs) =>
+        widenTopLevelEnvWithExpr(env, rhs)
+
+    | Bgn(es, last) =>
+        let env2 = es->List.reduce(env, (acc, e) => widenTopLevelEnvWithExpr(acc, e))
+        widenTopLevelEnvWithExpr(env2, last)
+
+    | If(c, t, e2) =>
+        let env1 = widenTopLevelEnvWithExpr(env, c)
+        let env2 = widenTopLevelEnvWithExpr(env1, t)
+        widenTopLevelEnvWithExpr(env2, e2)
+
+    | AppPrm(VecSet, list{vecExpr, _idx, value}) =>
+        switch vecExpr.it {
+        | Ref(x) =>
+            switch JavaStringMap.get(env, x) {
+            | Some(JArrayList(oldElt)) =>
+                let newElt =
+                  switch value.it {
+                  | Ref(y) if x == y => JObject
+                  | _ => mergeJavaTypes(oldElt, inferExprType(value, env))
+                  }
+                JavaStringMap.set(env, x, JArrayList(newElt))
+            | _ => env
+            }
+        | _ => env
+        }
+
+    | AppPrm(_, args) =>
+        args->List.reduce(env, (acc, arg) => widenTopLevelEnvWithExpr(acc, arg))
+
+    | App(f, args) =>
+        let env1 = widenTopLevelEnvWithExpr(env, f)
+        args->List.reduce(env1, (acc, arg) => widenTopLevelEnvWithExpr(acc, arg))
+
+    | _ => env
+    }
+
+  let collectTopLevelEnv = p => {
+    let rec loop = (p, env) =>
+      switch p.it {
+      | PNil => env
+      | PCons(t, rest) =>
+          let env2 =
+            switch t.it {
+            | Exp(e) =>
+                widenTopLevelEnvWithExpr(env, e)
+
+            | Def(d) =>
+                switch d.it {
+                | Var(x, rhs) =>
+                    let t = inferExprType(rhs, env)
+                    JavaStringMap.set(env, x.it, t)
+
+                | Fun(f, xs, body) =>
+                    JavaStringMap.set(env, f.it, inferTopLevelFunctionType(xs, body, env))
+
+                | GFun(_, _, _) =>
+                    raiseJavaPrintError("generator functions are not supported yet")
+                }
+            }
+          loop(rest, env2)
+      }
+    loop(p, JavaStringMap.empty)
+  }
+
+  let printDef = (d, env) =>
+    switch d.it {
+    | Var(x, rhs) =>
+        let t = inferExprType(rhs, env)
+        javaTypeToString(t) ++ " " ++ x.it ++ " = " ++ printExpr(rhs, env) ++ ";\n"
+
+    | Fun(f, xs, body) =>
+        let paramEnv =
+          xs->List.reduce(env, (acc, x) => JavaStringMap.set(acc, x.it, JInt))
+        let bodyEnv = extendEnvWithBlockDefs(body, paramEnv)
+        let ret =
+          switch body.it {
+          | BRet(e) => inferExprType(e, bodyEnv)
+          | BCons(_, _) => JVoid
+          }
+
+        javaTypeToString(ret)
+        ++ " "
+        ++ f.it
+        ++ "("
+        ++ concat(", ", xs->List.map(x => "int " ++ x.it)->List.toArray)
+        ++ ") {\n"
+        ++ printBlock(body, paramEnv, 1)
+        ++ "}\n"
+
+    | GFun(_, _, _) =>
+        raiseJavaPrintError("generator functions are not supported yet")
+    }
+
+  let printOutputlet = _ =>
+    raiseJavaPrintError("printOutputlet is not supported for JavaPrinter")
+
+  let printOutput = (~sep=?, _output) =>
+    raiseJavaPrintError("printOutput is not supported for JavaPrinter")
+
+  let printStandAloneTerm = ({it}: term<sourceLocation>) => {
+    let env = JavaStringMap.empty
+    switch it {
+    | Def(d) => printDef(d, env)
+    | Exp(e) =>
+        if shouldPrintTopLevelExpr(e) {
+          "System.out.println(" ++ printExpr(e, env) ++ ");"
+        } else {
+          printStmt(e, env, 0)
+        }
+    }
+  }
+
+  let printProgram = (insertPrintTopLevel, p) => {
+    let env = collectTopLevelEnv(p)
+
+    let rec loop = (p, defs, mainStmts) =>
+      switch p.it {
+      | PNil =>
+          helperPreamble
+          ++ defs
+          ++ "\nvoid main() {\n"
+          ++ mainStmts
+          ++ "}\n"
+
+      | PCons(t, rest) =>
+          switch t.it {
+          | Def(d) =>
+              loop(rest, defs ++ printDef(d, env) ++ "\n", mainStmts)
+          | Exp(e) =>
+              let line =
+                if insertPrintTopLevel && shouldPrintTopLevelExpr(e) {
+                  indent(1) ++ "System.out.println(" ++ printExpr(e, env) ++ ");\n"
+                } else {
+                  printStmt(e, env, 1)
+                }
+              loop(rest, defs, mainStmts ++ line)
+          }
+      }
+
+    loop(p, "", "")
+  }
+
+    let printProgramFull = printProgram
+}
+
+// Stop paste
+
 module type Translator = {
   let translateName: string => string
   // print terms, interleaved with whitespace
@@ -5158,3 +5760,4 @@ module PYTranslator = MakeTranslator(PYPrinter)
 module JSTranslator = MakeTranslator(JSPrinter)
 module PCTranslator = MakeTranslator(PCPrinter)
 module SCTranslator = MakeTranslator(SCPrinter)
+// module JavaPrinter = JavaPrinter
