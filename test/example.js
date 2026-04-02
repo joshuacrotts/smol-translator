@@ -6,11 +6,10 @@ import fs from "fs";
 
 
 const program = `
-(deffun (fact n)
-  (if (<= n 1)
-      1
-      (* n (fact (- n 1)))))
-(print (fact 5))
+(defvar v (mvec 1 2 3))
+(defvar vv (mvec v v))
+(vec-set! (vec-ref vv 1) 0 6)
+(vec-ref vv 0)
 `;
 
 const parsedProgram = SMoL.Parser.parseProgram(program);
